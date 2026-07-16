@@ -41,22 +41,30 @@ impl<H: ServerHandler> Service<RoleServer> for H {
                 ));
             }
         }
-        if matches!(&request, ClientRequest::DiscoverRequest(_)) {
-            if requested_version.is_none() {
+        // Self-contained metadata is required only when the request itself uses
+        // the inline lifecycle: a discover opener, a session that started without
+        // `initialize`, or a request that declares 2026-07-28+ in its own _meta.
+        // Sessions that negotiated via `initialize` (or `serve_directly`) keep the
+        // session model and may omit per-request metadata.
+        let requires_request_metadata = uses_inline_negotiation
+            && (matches!(&request, ClientRequest::DiscoverRequest(_))
+                || context.peer.request_metadata_required()
+                || requested_version.as_ref().is_some_and(|version| {
+                    version.as_str() >= ProtocolVersion::V_2026_07_28.as_str()
+                }));
+        if requires_request_metadata {
+            // Inline lifecycle requests are defined by the 2026-07-28 protocol.
+            // Validate that lifecycle contract even when a request selects an
+            // older application protocol version.
+            let missing = context
+                .meta
+                .missing_required_keys(&ProtocolVersion::V_2026_07_28);
+            if !missing.is_empty() {
                 return Err(McpError::invalid_params(
-                    "server/discover requires protocolVersion in request _meta",
-                    None,
-                ));
-            }
-            if context.meta.client_info().is_none() {
-                return Err(McpError::invalid_params(
-                    "server/discover requires clientInfo in request _meta",
-                    None,
-                ));
-            }
-            if context.meta.client_capabilities().is_none() {
-                return Err(McpError::invalid_params(
-                    "server/discover requires clientCapabilities in request _meta",
+                    format!(
+                        "request _meta is missing or has malformed required fields: {}",
+                        missing.join(", ")
+                    ),
                     None,
                 ));
             }
